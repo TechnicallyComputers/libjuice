@@ -13,7 +13,7 @@ The library is a simplified implementation of the Interactive Connectivity Estab
 
 libjuice is licensed under MPL 2.0, see [LICENSE](https://github.com/paullouisageneau/libjuice/blob/master/LICENSE).
 
-libjuice is available on [AUR](https://aur.archlinux.org/packages/libjuice/) and [vcpkg](https://vcpkg.io/en/getting-started). Bindings are available for [Rust](https://github.com/VollmondT/juice-rs).
+libjuice is available on [AUR](https://aur.archlinux.org/packages/libjuice-git) and [vcpkg](https://vcpkg.io/en/getting-started). Bindings are available for [Rust](https://github.com/VollmondT/juice-rs).
 
 For a STUN/TURN server application based on libjuice, see [Violet](https://github.com/paullouisageneau/violet).
 
@@ -102,4 +102,8 @@ $ make USE_NETTLE=1
 See [test/connectivity.c](https://github.com/paullouisageneau/libjuice/blob/master/test/connectivity.c) for a complete local connection example.
 
 See [test/server.c](https://github.com/paullouisageneau/libjuice/blob/master/test/server.c) for a server example.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/paullouisageneau/libjuice/blob/master/CONTRIBUTING.md) for contribution guidelines.
 
