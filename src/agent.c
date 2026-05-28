@@ -667,6 +667,20 @@ int agent_set_remote_gathering_done(juice_agent_t *agent) {
 	return 0;
 }
 
+int agent_set_ice_controlling(juice_agent_t *agent, bool controlling) {
+	if (!agent)
+		return -1;
+
+	conn_lock(agent);
+	agent->mode = controlling ? AGENT_MODE_CONTROLLING : AGENT_MODE_CONTROLLED;
+	if (controlling) {
+		/* Fresh tiebreaker when explicitly promoted to controlling (automatch host role). */
+		juice_random(&agent->ice_tiebreaker, sizeof(agent->ice_tiebreaker));
+	}
+	conn_unlock(agent);
+	return 0;
+}
+
 int agent_send(juice_agent_t *agent, const char *data, size_t size, int ds) {
 	// Try not to lock in the send path
 	agent_stun_entry_t *selected_entry = atomic_load(&agent->selected_entry);
@@ -1473,7 +1487,7 @@ int agent_process_stun_binding(juice_agent_t *agent, const stun_message_t *msg,
 		//  attribute with a value of 487 (Role Conflict) but retains its role.
 		if (agent->mode == AGENT_MODE_CONTROLLED && msg->ice_controlled) {
 			JLOG_WARN("ICE role conflict (both controlled)");
-			if (agent->ice_tiebreaker >= msg->ice_controlling) {
+			if (agent->ice_tiebreaker >= msg->ice_controlled) {
 				JLOG_DEBUG("Switching to controlling role");
 				agent->mode = AGENT_MODE_CONTROLLING;
 				agent_update_candidate_pairs(agent);
