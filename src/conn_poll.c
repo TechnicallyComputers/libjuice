@@ -21,6 +21,7 @@
 
 typedef struct registry_impl {
 	thread_t thread;
+	unsigned int io_pause_depth;
 #ifdef _WIN32
 	socket_t interrupt_sock;
 #else
@@ -135,11 +136,87 @@ void conn_poll_registry_cleanup(conn_registry_t *registry) {
 	registry->impl = NULL;
 }
 
+static int conn_poll_registry_interrupt(conn_registry_t *registry) {
+	registry_impl_t *registry_impl;
+
+	if (!registry || !registry->impl)
+		return -1;
+
+	registry_impl = registry->impl;
+	JLOG_VERBOSE("Interrupting connections thread");
+
+	char dummy = 0;
+#ifdef _WIN32
+	if (udp_sendto_self(registry_impl->interrupt_sock, &dummy, 0) < 0) {
+		if (sockerrno != SEAGAIN && sockerrno != SEWOULDBLOCK) {
+			JLOG_WARN("Failed to interrupt poll by triggering socket, errno=%d", sockerrno);
+		}
+		return -1;
+	}
+#else
+	if (write(registry_impl->interrupt_pipe_out, &dummy, 1) < 0 && errno != EAGAIN &&
+	    errno != EWOULDBLOCK) {
+		JLOG_WARN("Failed to interrupt poll by writing to pipe, errno=%d", errno);
+	}
+#endif
+	return 0;
+}
+
+int conn_poll_registry_pause(conn_registry_t *registry) {
+	registry_impl_t *registry_impl;
+
+	if (!registry || !registry->impl)
+		return -1;
+
+	registry_impl = registry->impl;
+	mutex_lock(&registry->mutex);
+	registry_impl->io_pause_depth++;
+	mutex_unlock(&registry->mutex);
+	return conn_poll_registry_interrupt(registry);
+}
+
+int conn_poll_registry_resume(conn_registry_t *registry) {
+	registry_impl_t *registry_impl;
+
+	if (!registry || !registry->impl)
+		return -1;
+
+	registry_impl = registry->impl;
+	mutex_lock(&registry->mutex);
+	if (registry_impl->io_pause_depth > 0)
+		registry_impl->io_pause_depth--;
+	mutex_unlock(&registry->mutex);
+	return conn_poll_registry_interrupt(registry);
+}
+
 int conn_poll_prepare(conn_registry_t *registry, pfds_record_t *pfds, timestamp_t *next_timestamp) {
 	timestamp_t now = current_timestamp();
 	*next_timestamp = now + 60000;
 
 	mutex_lock(&registry->mutex);
+	registry_impl_t *registry_impl = registry->impl;
+	if (registry_impl->io_pause_depth > 0) {
+		if (pfds->size != 1) {
+			struct pollfd *new_pfds = realloc(pfds->pfds, sizeof(struct pollfd));
+			if (!new_pfds) {
+				JLOG_FATAL("Memory allocation for poll file descriptors failed");
+				mutex_unlock(&registry->mutex);
+				return -1;
+			}
+			pfds->pfds = new_pfds;
+			pfds->size = 1;
+		}
+		struct pollfd *interrupt_pfd = pfds->pfds;
+#ifdef _WIN32
+		interrupt_pfd->fd = registry_impl->interrupt_sock;
+#else
+		interrupt_pfd->fd = registry_impl->interrupt_pipe_in;
+#endif
+		interrupt_pfd->events = POLLIN;
+		*next_timestamp = now + 500;
+		mutex_unlock(&registry->mutex);
+		return 1;
+	}
 	nfds_t size = 1;
 	for (int i = 0; i < registry->agents_size; ++i) {
 		juice_agent_t *agent = registry->agents[i];
@@ -169,7 +246,6 @@ int conn_poll_prepare(conn_registry_t *registry, pfds_record_t *pfds, timestamp_
 		pfds->size = size;
 	}
 
-	registry_impl_t *registry_impl = registry->impl;
 	struct pollfd *interrupt_pfd = pfds->pfds;
 	assert(interrupt_pfd);
 #ifdef _WIN32
@@ -555,16 +631,40 @@ int conn_poll_init(juice_agent_t *agent, conn_registry_t *registry, udp_socket_c
 	return 0;
 }
 
-void conn_poll_cleanup(juice_agent_t *agent) {
+int conn_poll_detach_agent(juice_agent_t *agent, conn_poll_deferred_close_t *out) {
 	conn_impl_t *conn_impl = agent->conn_impl;
+
+	if (!conn_impl)
+		return 0;
 
 	conn_poll_interrupt(agent);
 
+	if (out) {
+		out->udp_sock = conn_impl->udp_sock;
+		out->tcp_sock = conn_impl->tcp_sock;
+	}
+
 	mutex_destroy(&conn_impl->send_mutex);
-	closesocket(conn_impl->udp_sock);
-	closesocket(conn_impl->tcp_sock);
 	free(agent->conn_impl);
 	agent->conn_impl = NULL;
+	return 1;
+}
+
+void conn_poll_finish_deferred_close(const conn_poll_deferred_close_t *deferred) {
+	if (!deferred)
+		return;
+
+	if (deferred->udp_sock != INVALID_SOCKET)
+		closesocket(deferred->udp_sock);
+	if (deferred->tcp_sock != INVALID_SOCKET)
+		closesocket(deferred->tcp_sock);
+}
+
+void conn_poll_cleanup(juice_agent_t *agent) {
+	conn_poll_deferred_close_t deferred = {INVALID_SOCKET, INVALID_SOCKET};
+
+	if (conn_poll_detach_agent(agent, &deferred))
+		conn_poll_finish_deferred_close(&deferred);
 }
 
 void conn_poll_lock(juice_agent_t *agent) {
@@ -582,29 +682,12 @@ void conn_poll_unlock(juice_agent_t *agent) {
 int conn_poll_interrupt(juice_agent_t *agent) {
 	conn_impl_t *conn_impl = agent->conn_impl;
 	conn_registry_t *registry = conn_impl->registry;
-	registry_impl_t *registry_impl = registry->impl;
 
 	mutex_lock(&registry->mutex);
 	conn_impl->next_timestamp = current_timestamp();
 	mutex_unlock(&registry->mutex);
 
-	JLOG_VERBOSE("Interrupting connections thread");
-
-	char dummy = 0;
-#ifdef _WIN32
-	if (udp_sendto_self(registry_impl->interrupt_sock, &dummy, 0) < 0) {
-		if (sockerrno != SEAGAIN && sockerrno != SEWOULDBLOCK) {
-			JLOG_WARN("Failed to interrupt poll by triggering socket, errno=%d", sockerrno);
-		}
-		return -1;
-	}
-#else
-	if (write(registry_impl->interrupt_pipe_out, &dummy, 1) < 0 && errno != EAGAIN &&
-	    errno != EWOULDBLOCK) {
-		JLOG_WARN("Failed to interrupt poll by writing to pipe, errno=%d", errno);
-	}
-#endif
-	return 0;
+	return conn_poll_registry_interrupt(registry);
 }
 
 int conn_poll_send(juice_agent_t *agent, const addr_record_t *dst, const char *data, size_t size,

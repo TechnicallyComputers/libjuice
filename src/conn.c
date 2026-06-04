@@ -194,6 +194,9 @@ int conn_create(juice_agent_t *agent, udp_socket_config_t *config) {
 
 void conn_destroy(juice_agent_t *agent) {
 	conn_mode_entry_t *entry = get_agent_mode_entry(agent);
+	conn_poll_deferred_close_t deferred = {INVALID_SOCKET, INVALID_SOCKET};
+	int deferred_close = 0;
+
 	mutex_lock(&entry->mutex);
 
 	JLOG_DEBUG("Destroying connection");
@@ -201,8 +204,11 @@ void conn_destroy(juice_agent_t *agent) {
 	if (registry) {
 		mutex_lock(&registry->mutex);
 
-		entry->cleanup_func(agent);
-
+		/*
+		 * Poll mode: drop the agent from the poll set and wake the shared poll thread
+		 * before closing UDP/TCP fds. When this was the last agent, join the poll thread
+		 * in release_registry before closing sockets (avoids fdsan abort on Android).
+		 */
 		if (agent->conn_index >= 0) {
 			int i = agent->conn_index;
 			assert(registry->agents[i] == agent);
@@ -213,8 +219,17 @@ void conn_destroy(juice_agent_t *agent) {
 		assert(registry->agents_count > 0);
 		--registry->agents_count;
 
+		if (entry->registry_cleanup_func == conn_poll_registry_cleanup) {
+			deferred_close = conn_poll_detach_agent(agent, &deferred);
+		} else {
+			entry->cleanup_func(agent);
+		}
+
 		agent->registry = NULL;
-		release_registry(entry, registry); // unlocks the registry
+		release_registry(entry, registry); // unlocks the registry; joins poll thread if last agent
+
+		if (deferred_close)
+			conn_poll_finish_deferred_close(&deferred);
 
 	} else {
 		entry->cleanup_func(agent);

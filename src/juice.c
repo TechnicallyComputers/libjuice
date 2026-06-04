@@ -9,6 +9,7 @@
 #include "juice.h"
 #include "addr.h"
 #include "agent.h"
+#include "conn_poll.h"
 #include "ice.h"
 
 #ifndef NO_SERVER
@@ -28,6 +29,32 @@ JUICE_EXPORT juice_agent_t *juice_create(const juice_config_t *config) {
 JUICE_EXPORT void juice_destroy(juice_agent_t *agent) {
 	if (agent)
 		agent_destroy(agent);
+}
+
+JUICE_EXPORT int juice_pause_io(juice_agent_t *agent) {
+	if (!agent)
+		return JUICE_ERR_INVALID;
+
+	if (agent->config.concurrency_mode != JUICE_CONCURRENCY_MODE_POLL)
+		return JUICE_ERR_SUCCESS;
+
+	if (!agent->registry)
+		return JUICE_ERR_INVALID;
+
+	return (conn_poll_registry_pause(agent->registry) == 0) ? JUICE_ERR_SUCCESS : JUICE_ERR_FAILED;
+}
+
+JUICE_EXPORT int juice_resume_io(juice_agent_t *agent) {
+	if (!agent)
+		return JUICE_ERR_INVALID;
+
+	if (agent->config.concurrency_mode != JUICE_CONCURRENCY_MODE_POLL)
+		return JUICE_ERR_SUCCESS;
+
+	if (!agent->registry)
+		return JUICE_ERR_INVALID;
+
+	return (conn_poll_registry_resume(agent->registry) == 0) ? JUICE_ERR_SUCCESS : JUICE_ERR_FAILED;
 }
 
 JUICE_EXPORT int juice_gather_candidates(juice_agent_t *agent) {

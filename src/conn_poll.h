@@ -11,6 +11,7 @@
 
 #include "addr.h"
 #include "conn.h"
+#include "socket.h"
 #include "thread.h"
 #include "timestamp.h"
 
@@ -19,9 +20,20 @@
 
 int conn_poll_registry_init(conn_registry_t *registry, udp_socket_config_t *config);
 void conn_poll_registry_cleanup(conn_registry_t *registry);
+int conn_poll_registry_pause(conn_registry_t *registry);
+int conn_poll_registry_resume(conn_registry_t *registry);
 
 int conn_poll_init(juice_agent_t *agent, conn_registry_t *registry, udp_socket_config_t *config);
 void conn_poll_cleanup(juice_agent_t *agent);
+
+typedef struct conn_poll_deferred_close {
+	socket_t udp_sock;
+	socket_t tcp_sock;
+} conn_poll_deferred_close_t;
+
+/* Detach conn_impl without closing sockets (poll thread may still be in poll()). */
+int conn_poll_detach_agent(juice_agent_t *agent, conn_poll_deferred_close_t *out);
+void conn_poll_finish_deferred_close(const conn_poll_deferred_close_t *deferred);
 void conn_poll_lock(juice_agent_t *agent);
 void conn_poll_unlock(juice_agent_t *agent);
 int conn_poll_interrupt(juice_agent_t *agent);

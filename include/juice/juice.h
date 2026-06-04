@@ -120,6 +120,9 @@ typedef struct juice_config {
 
 JUICE_EXPORT juice_agent_t *juice_create(const juice_config_t *config);
 JUICE_EXPORT void juice_destroy(juice_agent_t *agent);
+/** POLL mode: exclude agent sockets from the shared poll thread (pair with juice_resume_io). */
+JUICE_EXPORT int juice_pause_io(juice_agent_t *agent);
+JUICE_EXPORT int juice_resume_io(juice_agent_t *agent);
 
 JUICE_EXPORT int juice_gather_candidates(juice_agent_t *agent);
 JUICE_EXPORT int juice_get_local_description(juice_agent_t *agent, char *buffer, size_t size);
